@@ -52,6 +52,17 @@ RUN apk add --no-cache \
 		tar \
 		xz
 
+{{ if (env.variant == "cli-opt") then ( -}}
+RUN apk add --no-cache musl-dev alpine-sdk abuild-rootbld git; \
+        git clone --depth 1 --branch 3.19-stable git://git.alpinelinux.org/aports; \
+        cd aports/main/musl; \
+        openssl genrsa -out key 2048; \
+        openssl rsa -in key -pubout -out key.pub; \
+        sed -i 's@--enable-debug@& --enable-optimize="string/*"@' APKBUILD; \
+        PACKAGER_PRIVKEY=$(pwd)/key abuild -F -r; \
+        apk add --allow-untrusted /root/packages/main/x86_64/musl-1.2.4_git20230717-r4.apk /root/packages/main/x86_64/musl-dev-1.2.4_git20230717-r4.apk /root/packages/main/x86_64/musl-libintl-1.2.4_git20230717-r4.apk /root/packages/main/x86_64/musl-utils-1.2.4_git20230717-r4.apk
+{{ ) else "" end -}}
+
 # ensure www-data user exists
 RUN set -eux; \
 	adduser -u 82 -D -S -G www-data www-data
@@ -80,10 +91,15 @@ RUN set -eux; \
 	chown www-data:www-data /var/www/html; \
 	chmod 1777 /var/www/html
 
-{{ if env.variant == "apache" then ( -}}
+{{ if [ "apache", "apache-zts" ] | index(env.variant) then ( -}}
 ENV APACHE_CONFDIR /etc/apache2
 ENV APACHE_ENVVARS $APACHE_CONFDIR/envvars
 
+{{ if is_alpine then ( -}}
+RUN apk add --no-cache apache2 apache2-dev; \
+    ln -s /usr/sbin/httpd /usr/sbin/apache2; \
+    sed -i 's/^LoadModule mpm_prefork_module/#&/; s/^#\( *LoadModule mpm_event_module\)/\1/' /etc/apache2/httpd.conf;
+{{ ) else ( -}}
 RUN set -eux; \
 	apt-get update; \
 	apt-get install -y --no-install-recommends apache2; \
@@ -123,25 +139,38 @@ RUN set -eux; \
 	ln -sfT /dev/stdout "$APACHE_LOG_DIR/access.log"; \
 	ln -sfT /dev/stdout "$APACHE_LOG_DIR/other_vhosts_access.log"; \
 	chown -R --no-dereference "$APACHE_RUN_USER:$APACHE_RUN_GROUP" "$APACHE_LOG_DIR"
+{{ ) end -}}
 
+{{ if (env.variant == "apache") then ( -}}
 # Apache + PHP requires preforking Apache for best results
 RUN a2dismod mpm_event && a2enmod mpm_prefork
+{{ ) else "" end -}}
 
 # PHP files should be handled by PHP, and should be preferred over any other file type
 RUN { \
-		echo '<FilesMatch \.php$>'; \
-		echo '\tSetHandler application/x-httpd-php'; \
-		echo '</FilesMatch>'; \
-		echo; \
-		echo 'DirectoryIndex disabled'; \
-		echo 'DirectoryIndex index.php index.html'; \
-		echo; \
-		echo '<Directory /var/www/>'; \
-		echo '\tOptions -Indexes'; \
-		echo '\tAllowOverride All'; \
-		echo '</Directory>'; \
-	} | tee "$APACHE_CONFDIR/conf-available/docker-php.conf" \
-	&& a2enconf docker-php
+        echo '<FilesMatch \.php$>'; \
+        echo '    SetHandler application/x-httpd-php'; \
+        echo '</FilesMatch>'; \
+        echo; \
+        echo 'DirectoryIndex disabled'; \
+        echo 'DirectoryIndex index.php index.html'; \
+        echo; \
+        echo '<Directory /var/www/>'; \
+        echo '    Options -Indexes'; \
+        echo '    AllowOverride All'; \
+        echo '</Directory>'; \
+        echo '<IfModule mpm_event_module>'; \
+        echo '    StartServers            2'; \
+        echo '    MinSpareThreads         25'; \
+        echo '    MaxSpareThreads         75'; \
+        echo '    ThreadLimit             64'; \
+        echo '    ThreadsPerChild         25'; \
+        echo '    MaxRequestWorkers       150'; \
+        echo '    MaxConnectionsPerChild  0'; \
+        echo '    ThreadStackSize         8388608'; \
+        echo '    </IfModule>'; \
+	} | tee "$APACHE_CONFDIR/{{ if is_alpine then "conf.d" else "conf-available" end }}/docker-php.conf" \
+	&& {{ if is_alpine then "rm $APACHE_CONFDIR/conf.d/mpm.conf" else "a2enconf docker-php" end }}
 
 {{ ) else "" end -}}
 # Apply stack smash protection to functions using local buffers and alloca()
@@ -261,7 +290,7 @@ RUN set -eux; \
 			"oniguruma-dev"
 		else
 			# debian packages
-			if env.variant == "apache" then "apache2-dev" else empty end,
+			if [ "apache", "apache-zts" ] | index(env.variant) then "apache2-dev" else empty end,
 			"libargon2-dev",
 			"libcurl4-openssl-dev",
 			"libreadline-dev",
@@ -340,7 +369,7 @@ RUN set -eux; \
 		--with-readline \
 		--with-zlib \
 		\
-{{ if [ "cli", "zts" ] | index(env.variant) then ( -}}
+{{ if [ "cli", "cli-opt", "zts", "apache-zts" ] | index(env.variant) then ( -}}
 # https://github.com/docker-library/php/pull/1259
 		--enable-phpdbg \
 		--enable-phpdbg-readline \
@@ -361,7 +390,7 @@ RUN set -eux; \
 		--with-libdir="lib/$debMultiarch" \
 {{ ) end -}}
 {{ # https://github.com/docker-library/php/issues/280 -}}
-{{ if [ "cli", "zts" ] | index(env.variant) then "" else ( -}}
+{{ if [ "cli", "cli-opt", "zts", "apache-zts" ] | index(env.variant) then "" else ( -}}
 		\
 		--disable-cgi \
 {{ ) end -}}
@@ -371,7 +400,7 @@ RUN set -eux; \
 # https://github.com/docker-library/php/pull/939#issuecomment-730501748
 		--enable-embed \
 {{ ) else "" end -}}
-{{ if env.variant == "apache" then ( -}}
+{{ if [ "apache", "apache-zts" ] | index(env.variant) then ( -}}
 		\
 		--with-apxs2 \
 {{ ) elif env.variant == "fpm" then ( -}}
@@ -379,14 +408,15 @@ RUN set -eux; \
 		--enable-fpm \
 		--with-fpm-user=www-data \
 		--with-fpm-group=www-data \
-{{ ) elif env.variant == "zts" then ( -}}
+{{ ) else "" end -}}
+{{ if [ "zts", "apache-zts" ] | index(env.variant) then ( -}}
 		\
 		--enable-zts \
 # https://externals.io/message/118859
 		--disable-zend-signals \
+{{ ) else "" end -}}
 {{ if [ "8.1", "8.2" ] | index(env.version | rtrimstr("-rc")) then ( -}}
 		--enable-zend-max-execution-timers \
-{{ ) else "" end -}}
 {{ ) else "" end -}}
 {{ if env.DOCKER_PHP_ENABLE_DEBUG then ( -}}
 {{ # DOCKER_PHP_ENABLE_DEBUG is not used or supported by official-images; this is for users who want to build their own php image with debug enabled -}}
@@ -397,17 +427,6 @@ RUN set -eux; \
 	make -j "$(nproc)"; \
 	find -type f -name '*.a' -delete; \
 	make install; \
-{{ if env.DOCKER_PHP_ENABLE_DEBUG then "" else ( -}}
-{{ # DOCKER_PHP_ENABLE_DEBUG is not used by official-images -}}
-	find \
-		/usr/local \
-		-type f \
-		-perm '/0111' \
-		-exec sh -euxc ' \
-			strip --strip-all "$@" || : \
-		' -- '{}' + \
-	; \
-{{ ) end -}}
 	make clean; \
 	\
 # https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
@@ -449,13 +468,25 @@ RUN set -eux; \
 # smoke test
 	php --version
 
+{{ if is_alpine then ( -}}
+RUN apk add --no-cache jemalloc mimalloc bash
+{{ ) else ( -}}
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends libjemalloc2 libmimalloc2.0; \
+	rm -rf /var/lib/apt/lists/*
+{{ ) end -}}
+
 COPY docker-php-ext-* docker-php-entrypoint /usr/local/bin/
 
 # sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
 RUN docker-php-ext-enable sodium
 
 ENTRYPOINT ["docker-php-entrypoint"]
-{{ if env.variant == "apache" then ( -}}
+{{ if [ "apache", "apache-zts" ] | index(env.variant) then ( -}}
+{{ if is_alpine then ( -}}
+RUN sed -i 's@LoadModule php_module.*@LoadModule php_module modules/libphp.so@' /etc/apache2/httpd.conf
+{{ ) else "" end -}}
 # https://httpd.apache.org/docs/2.4/stopping.html#gracefulstop
 STOPSIGNAL SIGWINCH
 
@@ -516,4 +547,18 @@ STOPSIGNAL SIGQUIT
 
 EXPOSE 9000
 {{ ) else "" end -}}
+
+RUN printf "zend_extension=opcache.so\n" > "$PHP_INI_DIR/conf.d/docker-opcache.ini"
+
+{{ if is_alpine then ( -}}
+RUN apk --no-cache add perf
+{{ ) else ( -}}
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+		linux-perf \
+	; \
+	rm -rf /var/lib/apt/lists/*
+{{ ) end -}}
+
 CMD {{ env.cmd }}

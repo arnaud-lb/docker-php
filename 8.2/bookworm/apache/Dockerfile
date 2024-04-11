@@ -94,17 +94,27 @@ RUN a2dismod mpm_event && a2enmod mpm_prefork
 
 # PHP files should be handled by PHP, and should be preferred over any other file type
 RUN { \
-		echo '<FilesMatch \.php$>'; \
-		echo '\tSetHandler application/x-httpd-php'; \
-		echo '</FilesMatch>'; \
-		echo; \
-		echo 'DirectoryIndex disabled'; \
-		echo 'DirectoryIndex index.php index.html'; \
-		echo; \
-		echo '<Directory /var/www/>'; \
-		echo '\tOptions -Indexes'; \
-		echo '\tAllowOverride All'; \
-		echo '</Directory>'; \
+        echo '<FilesMatch \.php$>'; \
+        echo '    SetHandler application/x-httpd-php'; \
+        echo '</FilesMatch>'; \
+        echo; \
+        echo 'DirectoryIndex disabled'; \
+        echo 'DirectoryIndex index.php index.html'; \
+        echo; \
+        echo '<Directory /var/www/>'; \
+        echo '    Options -Indexes'; \
+        echo '    AllowOverride All'; \
+        echo '</Directory>'; \
+        echo '<IfModule mpm_event_module>'; \
+        echo '    StartServers            2'; \
+        echo '    MinSpareThreads         25'; \
+        echo '    MaxSpareThreads         75'; \
+        echo '    ThreadLimit             64'; \
+        echo '    ThreadsPerChild         25'; \
+        echo '    MaxRequestWorkers       150'; \
+        echo '    MaxConnectionsPerChild  0'; \
+        echo '    ThreadStackSize         8388608'; \
+        echo '    </IfModule>'; \
 	} | tee "$APACHE_CONFDIR/conf-available/docker-php.conf" \
 	&& a2enconf docker-php
 
@@ -236,18 +246,11 @@ RUN set -eux; \
 		--disable-cgi \
 		\
 		--with-apxs2 \
+		--enable-zend-max-execution-timers \
 	; \
 	make -j "$(nproc)"; \
 	find -type f -name '*.a' -delete; \
 	make install; \
-	find \
-		/usr/local \
-		-type f \
-		-perm '/0111' \
-		-exec sh -euxc ' \
-			strip --strip-all "$@" || : \
-		' -- '{}' + \
-	; \
 	make clean; \
 	\
 # https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
@@ -277,6 +280,11 @@ RUN set -eux; \
 # smoke test
 	php --version
 
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends libjemalloc2 libmimalloc2.0; \
+	rm -rf /var/lib/apt/lists/*
+
 COPY docker-php-ext-* docker-php-entrypoint /usr/local/bin/
 
 # sodium was built as a shared module (so that it can be replaced later if so desired), so let's enable it too (https://github.com/docker-library/php/issues/598)
@@ -290,4 +298,14 @@ COPY apache2-foreground /usr/local/bin/
 WORKDIR /var/www/html
 
 EXPOSE 80
+
+RUN printf "zend_extension=opcache.so\n" > "$PHP_INI_DIR/conf.d/docker-opcache.ini"
+
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+		linux-perf \
+	; \
+	rm -rf /var/lib/apt/lists/*
+
 CMD ["apache2-foreground"]

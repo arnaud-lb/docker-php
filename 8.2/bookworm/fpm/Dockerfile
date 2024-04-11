@@ -177,18 +177,11 @@ RUN set -eux; \
 		--enable-fpm \
 		--with-fpm-user=www-data \
 		--with-fpm-group=www-data \
+		--enable-zend-max-execution-timers \
 	; \
 	make -j "$(nproc)"; \
 	find -type f -name '*.a' -delete; \
 	make install; \
-	find \
-		/usr/local \
-		-type f \
-		-perm '/0111' \
-		-exec sh -euxc ' \
-			strip --strip-all "$@" || : \
-		' -- '{}' + \
-	; \
 	make clean; \
 	\
 # https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
@@ -217,6 +210,11 @@ RUN set -eux; \
 	\
 # smoke test
 	php --version
+
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends libjemalloc2 libmimalloc2.0; \
+	rm -rf /var/lib/apt/lists/*
 
 COPY docker-php-ext-* docker-php-entrypoint /usr/local/bin/
 
@@ -275,4 +273,14 @@ RUN set -eux; \
 STOPSIGNAL SIGQUIT
 
 EXPOSE 9000
+
+RUN printf "zend_extension=opcache.so\n" > "$PHP_INI_DIR/conf.d/docker-opcache.ini"
+
+RUN set -eux; \
+	apt-get update; \
+	apt-get install -y --no-install-recommends \
+		linux-perf \
+	; \
+	rm -rf /var/lib/apt/lists/*
+
 CMD ["php-fpm"]

@@ -27,6 +27,7 @@ RUN apk add --no-cache \
 		tar \
 		xz
 
+
 # ensure www-data user exists
 RUN set -eux; \
 	adduser -u 82 -D -S -G www-data www-data
@@ -165,18 +166,11 @@ RUN set -eux; \
 		--enable-fpm \
 		--with-fpm-user=www-data \
 		--with-fpm-group=www-data \
+		--enable-zend-max-execution-timers \
 	; \
 	make -j "$(nproc)"; \
 	find -type f -name '*.a' -delete; \
 	make install; \
-	find \
-		/usr/local \
-		-type f \
-		-perm '/0111' \
-		-exec sh -euxc ' \
-			strip --strip-all "$@" || : \
-		' -- '{}' + \
-	; \
 	make clean; \
 	\
 # https://github.com/docker-library/php/issues/692 (copy default example "php.ini" files somewhere easily discoverable)
@@ -201,6 +195,8 @@ RUN set -eux; \
 	\
 # smoke test
 	php --version
+
+RUN apk add --no-cache jemalloc mimalloc bash
 
 COPY docker-php-ext-* docker-php-entrypoint /usr/local/bin/
 
@@ -259,4 +255,9 @@ RUN set -eux; \
 STOPSIGNAL SIGQUIT
 
 EXPOSE 9000
+
+RUN printf "zend_extension=opcache.so\n" > "$PHP_INI_DIR/conf.d/docker-opcache.ini"
+
+RUN apk --no-cache add perf
+
 CMD ["php-fpm"]
